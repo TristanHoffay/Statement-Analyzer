@@ -1,24 +1,16 @@
-'''
-Ideas/Issues
-+ Improve or redo json implementation
-+ Add modifiably defined JSON structure. Maybe have JSON class, like accounts, that defines these static variables and houses functions to interact with JSON data.
-+ Potentially change JSON reading/writing to batch updates or read at script load and write at close. Not important if current implementation of frequent updates does not cause performance issues.
-+ Remove/clear stored hashes for files upon appropriate actions, like rebuilding compiled data or other actions that would effectively remove any usage of a file. Implementing this would also allow read_all to be simplified to removing all hashes and calling read_new, or something similar.
-+ All BoA-specific functions might eventually become obsolete and should become more modular to encorporate all account types. There should still be ways to specify specific banks or account types, however.
-'''
-
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 import re
 import os
+import json
 from pypdf import PdfReader
 
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 
 compile_name_boa = 'Bank of America.csv'
-data_dir = 'data.json'
 
+# STATIC CLASSES -- Do not make instances of >:(
 class Account:
     pass
 class BoA_Credit(Account):
@@ -98,6 +90,62 @@ class BoA_Savings(BoA_Debit):
     name = 'Bank of America Savings'
     file_dir = 'boa_savings/'
 
+# Jason is your friend. He will help you manage data storage with a JSON file.
+# Give him life to earn his favor (instantiate and objectify him)
+class Jason:
+    Instance = None
+    file_dir = 'data.json'
+    json_init = {"hashes":{}}
+    indent = 6
+
+    # Returns active Jason object. Creates it if one does not exist.
+    @staticmethod
+    def find():
+        if Jason.Instance is not None:
+            return Jason.Instance
+        else:
+            return Jason()
+    # Checks if JSON file exists, creates it if not. Returns true on success
+    @staticmethod
+    def ensure_file():
+        try:
+            if not os.path.isfile(Jason.file_dir):
+                with open(Jason.file_dir, 'w') as f:
+                    json.dump(Jason.json_init, f, indent=Jason.indent)
+            return True
+        except:
+            return False
+
+    def __init__(self):
+        if Jason.Instance is not None:
+            return
+        Jason.Instance = self
+        self.data = self.read_file()
+    def read_file(self):
+        if Jason.ensure_file():
+            with open(Jason.file_dir, 'r') as f:
+                self.data = json.load(f)
+    def write_file(self):
+        with open(Jason.file_dir, 'w') as f:
+            json.dump(self.data, f, indent=Jason.indent)
+
+    def get_data(self):
+        if self.data is None:
+            self.read_file()
+        return self.data
+    # Write data to stored dictionary of JSON data. Returns True on success
+    # Takes path, a list of keys to get to where the new key/value should be set
+    # Keys in 'path' MUST exist in the data, but 'key' can be a new key to add.
+    def write_data(self, key, value, path=[]):
+        entry = self.data
+        for nav in path:
+            if entry is None:
+                return False
+            entry = entry[nav]
+        entry[key] = value
+        self.write_file()
+        return True
+
 # Function that finds all eStatement PDFs of a given account type and compiles them into a single DataFrame (returns the DataFrame)
 def read_all(Account):
     df = pd.DataFrame()
@@ -123,10 +171,7 @@ def read_new(Account, check_hash=False):
     files = sorted(os.listdir(Account.file_dir))
     new_files = files
     # Find files already read
-    import json
-    with get_json() as file:
-        # Load stored data
-        data = json.load(file)
+    data = Jason.find().get_data()
     old_files = data.get('hashes', {}).keys()
     new_files = [f for f in files if f not in old_files]
     # If parameter is set to check hash values of statements
@@ -203,15 +248,6 @@ def read(filename, Account):
     print(f"Validation success for {filename}.")
     return df
 
-# Get JSON file, create one if none exists. Returns open file.
-def get_json():
-    if not os.path.isfile(data_dir):
-        with open(data_dir, 'w') as f:
-            data = {"hashes":{}}
-            import json
-            json.dump(data, f, indent=6)
-    return open(data_dir, "r+")
-
 # Get the hash of a file. Returns hash
 def get_file_hash(filename):
     import hashlib
@@ -222,43 +258,27 @@ def get_file_hash(filename):
 
 # Write hash of updated file. Returns new hash
 def write_file_hash(filename):
-    import json
-    with get_json() as f:
-        # Load stored data
-        data = json.load(f)
-        # Make sure 'hashes' dict exists
-        data["hashes"] = data.get('hashes', {})
-        # Set file hash value to filename key in 'hashes'
-        new_hash = get_file_hash(filename)
-        data['hashes'][filename] = new_hash
-        f.seek(0)
-        json.dump(data, f, indent=6)
-        print(f"Hash value ({new_hash}) written to {data_dir} for {filename}.")
-        return new_hash
+    # Set file hash value to filename key in 'hashes'
+    new_hash = get_file_hash(filename)
+    Jason.find().write_data(filename, new_hash, ['hashes'])
+    print(f"Hash value ({new_hash}) written to {Jason.file_dir} for {filename}.")
+    return new_hash
 
 # Check if hash of file matches stored hash. Returns bool if match. No previous hash data defaults to False (no match)
 def check_file_hash(filename):
-    # Check if json exists
-    if not os.path.isfile(filename):
-        print(f"JSON data file does not exist.")
-        return False
-    # Use defined json data directory
-    import json
-    with get_json() as file:
-        # Load stored hash value for file
-        data = json.load(file)
-        check = data.get('hashes', {}).get(filename)
-        # Find current hash value for file
-        current_hash = get_file_hash(filename)
-        if check is None:
-            print(f"Hash value for {filename} not present in {data_dir}.")
-        # If hash does not match, return false
-        elif check == current_hash:
-            print(f"File hash in {data_dir} matches record for {filename}.")
-            return True
-        else:
-            print(f"File {filename} has been modified outside the program (hash value does not match value stored in {data_dir}).")
-        return False
+    data = Jason.find().get_data()
+    check = data.get('hashes', {}).get(filename)
+    # Find current hash value for file
+    current_hash = get_file_hash(filename)
+    if check is None:
+        print(f"Hash value for {filename} not present in {Jason.file_dir}.")
+    # If hash does not match, return false
+    elif check == current_hash:
+        print(f"File hash in {Jason.file_dir} matches record for {filename}.")
+        return True
+    else:
+        print(f"File {filename} has been modified outside the program (hash value does not match value stored in {Jason.file_dir}).")
+    return False
 
 
 # Searches for any new statements and adds them to a compiled spreadsheet
@@ -313,6 +333,7 @@ def rebuild_boa():
     df_total.to_csv(compile_name_boa, index=False)
     write_file_hash(compile_name_boa)
     return df_total
+
 
 while True:
     inp = input("Select an option:\n" +
