@@ -12,8 +12,10 @@ compile_name_boa = 'Bank of America.csv'
 
 # STATIC CLASSES -- Do not make instances of >:(
 class Account:
-    pass
-class BoA_Credit(Account):
+    bank = 'None'
+class BankOfAmerica(Account):
+    bank = 'Bank of America'
+class BoA_Credit(BankOfAmerica):
     name = 'Bank of America Credit'
     file_dir = 'boa_credit/'
     trans_regex = r"(\d+/\d+ \d+/\d+ .+(?:\n\d+\.\d{2})?.+)"
@@ -55,7 +57,7 @@ class BoA_Credit(Account):
         'Fee': re.search(r"(Fees Charged).+\$(\d+\.\d+)", page_text).group(2),
         'Interest': re.search(r"(Interest Charged).+\$(\d+\.\d+)", page_text).group(2)}
         return true_vals
-class BoA_Debit(Account):
+class BoA_Debit(BankOfAmerica):
     name = 'Bank of America Debit (Checking)'
     file_dir = 'boa_debit/'
     trans_regex = r"(\d{2}/\d{2}/\d{2}) (.+(?:\nID:\d+)?.*)[a-zA-Z ](-?(?:\d+,?)+\.\d{2})"
@@ -95,7 +97,7 @@ class BoA_Savings(BoA_Debit):
 class Jason:
     Instance = None
     file_dir = 'data.json'
-    json_init = {"hashes":{}}
+    json_init = {"banks":{}}
     indent = 6
 
     # Returns active Jason object. Creates it if one does not exist.
@@ -115,6 +117,13 @@ class Jason:
             return True
         except:
             return False
+    # Returns list of keys that direct to storage for a given account
+    @staticmethod
+    def get_account_path(account):
+        path = ['banks', account.bank]
+        if hasattr(account, 'name'):
+            path.append(account.name)
+        return path
 
     def __init__(self):
         if Jason.Instance is not None:
@@ -129,83 +138,122 @@ class Jason:
         with open(Jason.file_dir, 'w') as f:
             json.dump(self.data, f, indent=Jason.indent)
 
-    def get_data(self):
+    # Returns data at key, after given path (list of keys). Returns None if none
+    def get_data(self, key, path=[]):
         if self.data is None:
             self.read_file()
-        return self.data
+        entry = self.data
+        for nav in path:
+            if entry is None:
+                return None
+            try:
+                entry = entry[nav]
+            except:
+                return None
+        if key in entry.keys():
+            return entry[key]
+        else:
+            return None
     # Write data to stored dictionary of JSON data. Returns True on success
     # Takes path, a list of keys to get to where the new key/value should be set
-    # Keys in 'path' MUST exist in the data, but 'key' can be a new key to add.
+    # If keys in 'path' do not exist, they will be written. Beware typos.
     def write_data(self, key, value, path=[]):
+        if self.data is None:
+            self.read_file()
+        entry = self.data
+        for nav in path:
+            if nav not in entry.keys():
+                entry[nav] = {}
+            entry = entry[nav]
+        entry[key] = value
+        self.write_file()
+        return True
+    # Removes all data
+    def clear_data(self):
+        self.data = Jason.json_init
+        self.write_file()
+    # Removes key from data. Key must exist. Returns True on success
+    def remove_data(self, key, path=[]):
         entry = self.data
         for nav in path:
             if entry is None:
                 return False
             entry = entry[nav]
-        entry[key] = value
+        try:
+            del entry[key]
+            self.write_file()
+            return True
+        except:
+            return False
+    # Like remove_data, but returns value or None if not existent
+    def pop_data(self, key, path=[]):
+        entry = self.data
+        for nav in path:
+            if entry is None:
+                return False
+            entry = entry[nav]
+        val = entry.pop(key, None)
         self.write_file()
-        return True
+        return val
+
 
 # Function that finds all eStatement PDFs of a given account type and compiles them into a single DataFrame (returns the DataFrame)
-def read_all(Account):
+def read_all(account):
     df = pd.DataFrame()
     errors = []
-    files = sorted(os.listdir(Account.file_dir))
-    print(f"{len(files)} files found in {Account.name} directory: {', '.join(files)}")
+    files = sorted([account.file_dir + f for f in os.listdir(account.file_dir)])
+    print(f"{len(files)} files found in {account.name} directory: {', '.join(files)}")
     for f in files:
-        new_df = read(f, Account)
-        write_file_hash(Account.file_dir + f)
+        new_df = read(f, account)
+        write_file_hash(f, account)
         if new_df is None:
             errors.append(f)
             continue
         df = pd.concat([df, new_df])
-    print(f"Files in the {Account.name} directory have been read into a dataframe.")
+    print(f"Files in the {account.name} directory have been read into a dataframe.")
     if len(errors) > 0:
         print(f"There was a problem with files: {', '.join(errors)}")
     return df
 
 # Similar functionality to read_all() except that it ignores files which have already been read (denoted by filename). Returns DF of new data. 'check_hash' parameter determines if stored hash of statement files should also be used to identify new data. This is not really necessary though, and in a situation where it would make a difference, it would produce unpredictable output (duplicates, etc.)
-def read_new(Account, check_hash=False):
+def read_new(account, check_hash=False):
     df = pd.DataFrame()
     errors = []
-    files = sorted(os.listdir(Account.file_dir))
-    new_files = files
+    files = sorted([account.file_dir + f for f in os.listdir(account.file_dir)])
     # Find files already read
-    data = Jason.find().get_data()
-    old_files = data.get('hashes', {}).keys()
+    old_files = Jason.find().get_data('hashes', Jason.get_account_path(account)).keys()
     new_files = [f for f in files if f not in old_files]
     # If parameter is set to check hash values of statements
     if check_hash:
         # Check each file in directory that has hash
         for f in [f for f in files if f in old_files]:
             # If hash does not match, add it for re-reading
-            if not check_file_hash(f):
+            if not check_file_hash(f, account):
                 new_files.append(f)
-    print(f"{len(new_files)} new files found in {Account.name} directory: {', '.join(new_files)}")
-    return
+    print(f"{len(new_files)} new files found in {account.name} directory: {', '.join(new_files)}")
     for f in new_files:
-        new_df = read(f, Account)
-        write_file_hash(Account.file_dir + f)
+        new_df = read(f, account)
+        write_file_hash(f, account)
         if new_df is None:
             errors.append(f)
             continue
         df = pd.concat([df, new_df])
-    print(f"New files in the {Account.name} directory have been read into a dataframe.")
+    print(f"New files in the {account.name} directory have been read into a dataframe.")
     if len(errors) > 0:
         print(f"There was a problem with files: {', '.join(errors)}")
     return df
 
 # Function for reading statement of given account type. Returns DataFrame.
-def read(filename, Account):
-    reader = PdfReader(Account.file_dir + filename)
+def read(filename, account):
+    reader = PdfReader(filename)
     transactions = []
     for page in reader.pages:
         text = page.extract_text()
-        transactions.extend(Account.get_trans_in_page(text))
+        transactions.extend(account.get_trans_in_page(text))
     print(f"Found {len(transactions)} transactions in {filename}")
     #print('\n\n'.join(transactions))
     # Get date (for year)
-    date = Account.get_date(reader)
+    date = account.get_date(reader)
 
     # Create dict for data
     df = pd.DataFrame()
@@ -214,13 +262,13 @@ def read(filename, Account):
     for trans in transactions:
         data['Statement Date'].append(date)
         # Call account's function for parsing transactions (returns dict)
-        new_data = Account.parse_trans(trans, date)
+        new_data = account.parse_trans(trans, date)
         # for returned data keys that match data keys, set. for others, set None
         for key, val in new_data.items():
             data[key].append(val)
         # Add account type's name
-        data['Account'].append(Account.name)
-        data['Statement/Source'].append(f"{Account.file_dir}{filename}")
+        data['Account'].append(account.name)
+        data['Statement/Source'].append(f"{filename}")
         length = len(data['Statement Date'])
         for key in data.keys():
             if len(data[key]) < length:
@@ -237,7 +285,7 @@ def read(filename, Account):
     # Validate by adding transactions and comparing to values on page 1
     text = reader.pages[0].extract_text().replace(',', '')
     # Get actual values from statement totals
-    true_values = Account.parse_validity_ref(text)
+    true_values = account.parse_validity_ref(text)
     # Compare actual values to totals of each category
     for cat in true_values.keys():
         found_value = round(df[df['Type']==cat]['Amount'].sum(), 2)
@@ -257,17 +305,20 @@ def get_file_hash(filename):
         return md5
 
 # Write hash of updated file. Returns new hash
-def write_file_hash(filename):
+def write_file_hash(filename, account):
     # Set file hash value to filename key in 'hashes'
     new_hash = get_file_hash(filename)
-    Jason.find().write_data(filename, new_hash, ['hashes'])
+    Jason.find().write_data(filename, new_hash, Jason.get_account_path(account) + ['hashes'])
     print(f"Hash value ({new_hash}) written to {Jason.file_dir} for {filename}.")
     return new_hash
 
 # Check if hash of file matches stored hash. Returns bool if match. No previous hash data defaults to False (no match)
-def check_file_hash(filename):
-    data = Jason.find().get_data()
-    check = data.get('hashes', {}).get(filename)
+def check_file_hash(filename, account):
+    data = Jason.find().get_data('hashes', Jason.get_account_path(account))
+    if data is None:
+        print(f"Hash data for {Jason.get_account_path(account)} not present in {Jason.file_dir}.")
+        return False
+    check = data.get(filename)
     # Find current hash value for file
     current_hash = get_file_hash(filename)
     if check is None:
@@ -289,7 +340,7 @@ def update_boa():
         rebuild_boa()
         return
     # If compiled file does not match hash (modified), rebuild
-    if not check_file_hash(compile_name_boa):
+    if not check_file_hash(compile_name_boa, BankOfAmerica):
         print(f"Assuming file: {compile_name_boa} has been modified and is not reliable. Rebuilding it from all data.")
         rebuild_boa()
         return
@@ -299,17 +350,16 @@ def update_boa():
     df3 = read_new(BoA_Savings)
     new_data = [df for df in [df1, df2, df3] if df is not None]
     if len(new_data) > 0:
-        df_total = pd.concat(new_data)
-        df_total.to_csv(compile_name_boa, index=False)
-        write_file_hash(compile_name_boa)
+        from_csv = pd.read_csv(compile_name_boa)
+        df_total = pd.concat([from_csv] + new_data)
 
         print("Dropping any potential duplicates...")
-        from_csv['Transaction Date'] = pd.to_datetime(from_csv['Transaction Date'])
-        from_csv['Reference Number'] = pd.to_numeric(from_csv['Reference Number'])
-        from_csv['Account Number'] = pd.to_numeric(from_csv['Account Number'])
-        from_csv.drop_duplicates(inplace=True)
-        from_csv.to_csv(compile_name_boa, index=False)
-        write_file_hash(compile_name_boa)
+        df_total['Transaction Date'] = pd.to_datetime(df_total['Transaction Date'])
+        df_total['Reference Number'] = pd.to_numeric(df_total['Reference Number'])
+        df_total['Account Number'] = pd.to_numeric(df_total['Account Number'])
+        df_total.drop_duplicates(inplace=True)
+        df_total.to_csv(compile_name_boa, index=False)
+        write_file_hash(compile_name_boa, BankOfAmerica)
         print(f"Compiled Bank of America file ({compile_name_boa}) has been updated.")
     else:
         print(f"No new data found to add to compiled Bank of America file ({compile_name_boa}).")
@@ -331,7 +381,7 @@ def rebuild_boa():
     df3 = read_all(BoA_Savings)
     df_total = pd.concat([df1, df2, df3])
     df_total.to_csv(compile_name_boa, index=False)
-    write_file_hash(compile_name_boa)
+    write_file_hash(compile_name_boa, BankOfAmerica)
     return df_total
 
 
