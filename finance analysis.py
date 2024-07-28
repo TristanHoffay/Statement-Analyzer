@@ -15,6 +15,8 @@ class Account:
     bank = 'None'
 class BankOfAmerica(Account):
     bank = 'Bank of America'
+class CapitalOne(Account):
+    bank = 'Capital One'
 class BoA_Credit(BankOfAmerica):
     name = 'Bank of America Credit'
     file_dir = 'boa_credit/'
@@ -91,6 +93,51 @@ class BoA_Debit(BankOfAmerica):
 class BoA_Savings(BoA_Debit):
     name = 'Bank of America Savings'
     file_dir = 'boa_savings/'
+class Cap_Credit(CapitalOne):
+    name = 'Capital One Credit'
+    file_dir = 'cap_one_credit/'
+    trans_regex = r"(?:(?:[A-Z][a-z]{2} \d{1,2}\s*){2}[^\$]*\s*-?\$(?:\d+,)*\d+\.\d{2})|(?:Interest Charge .*\$(?:\d+,)*\d+\.\d{2})"
+    date_regex = r"[A-Z][a-z]{2} \d{1,2}, \d{4} - ([A-Z][a-z]{2} \d{1,2}, \d{4})"
+
+    def get_trans_in_page(page_text):
+        transactions = re.findall(Cap_Credit.trans_regex, page_text)
+        return transactions
+    def get_date(reader):
+        date = re.search(Cap_Credit.date_regex, reader.pages[0].extract_text()).group(1)
+        return date
+    def parse_trans(trans, date):
+        data = {}
+        splits = trans.split(' ')
+        # If trans is interest, handle differently
+        if splits[0] == 'Interest':
+            data['Transaction Date'] = date
+            data['Posting Date'] = date
+            data['Description'] = trans.split(' $')[0]
+            data['Type'] = 'Interest'
+        else:
+            # Get transaction date
+            year = int(date[-4:])-1 if (splits[0] == "Dec" and date[:3] == "Jan") else int(date[-4:])
+            data['Transaction Date'] = f"{' '.join(splits[:2])}, {year}"
+            data['Posting Date'] = f"{' '.join(splits[2:3])}, {year}"
+            if 'PAST DUE FEE' in ' '.join(splits[4:-1]):
+                data['Type'] = "Fee"
+            elif splits[-2] == '-':
+                data['Type'] = "Payment" if 'PYMT' in ' '.join(splits[4:-2]) else "Credit"
+                splits = splits[:-2] + [''.join(splits[-2:])]
+            else:
+                data['Type'] = "Purchase"
+            data['Description'] = ' '.join(splits[4:-1]).replace('\n',' ')
+        data['Amount'] = splits[-1].replace('$', '')
+        return data
+    def parse_validity_ref(page_text):
+        true_vals = {
+        'Payment': '-' + re.search(r"(Payments).*\$(\d+\.\d{2})", page_text).group(2),
+        'Credit': '-' + re.search(r"(Other Credits).*\$(\d+\.\d{2})", page_text).group(2),
+        'Purchase': re.search(r"(Transactions).*\$(\d+\.\d{2})", page_text).group(2),
+        'Fee': re.search(r"(Fees Charged).*\$(\d+\.\d{2})", page_text).group(2),
+        'Interest': re.search(r"(Interest Charged).*\$(\d+\.\d{2})", page_text).group(2)}
+        return true_vals
+
 
 # Jason is your friend. He will help you manage data storage with a JSON file.
 # Give him life to earn his favor (instantiate and objectify him)
@@ -280,7 +327,7 @@ def read(filename, account):
     if not is_numeric_dtype(df['Amount']):
         df['Amount'] = pd.to_numeric(df['Amount'].str.replace(',', ''))
     # Convert to datetime
-    df["Transaction Date"] = pd.to_datetime(df["Transaction Date"])
+    df["Transaction Date"] = pd.to_datetime(df["Transaction Date"], format='mixed')
 
     # Validate by adding transactions and comparing to values on page 1
     text = reader.pages[0].extract_text().replace(',', '')
