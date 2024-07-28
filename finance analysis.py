@@ -8,15 +8,19 @@ from pypdf import PdfReader
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 
-compile_name_boa = 'Bank of America.csv'
+total_compile_name = 'All Data.csv'
 
 # STATIC CLASSES -- Do not make instances of >:(
 class Account:
     bank = 'None'
 class BankOfAmerica(Account):
     bank = 'Bank of America'
+    compile_name = 'Bank of America.csv'
+    accounts = []
 class CapitalOne(Account):
     bank = 'Capital One'
+    compile_name = 'Capital One.csv'
+    accounts = []
 class BoA_Credit(BankOfAmerica):
     name = 'Bank of America Credit'
     file_dir = 'boa_credit/'
@@ -137,7 +141,8 @@ class Cap_Credit(CapitalOne):
         'Fee': re.search(r"(Fees Charged).*\$(\d+\.\d{2})", page_text).group(2),
         'Interest': re.search(r"(Interest Charged).*\$(\d+\.\d{2})", page_text).group(2)}
         return true_vals
-
+BankOfAmerica.accounts = [BoA_Credit, BoA_Debit, BoA_Savings]
+CapitalOne.accounts = [Cap_Credit]
 
 # Jason is your friend. He will help you manage data storage with a JSON file.
 # Give him life to earn his favor (instantiate and objectify him)
@@ -379,70 +384,168 @@ def check_file_hash(filename, account):
     return False
 
 
-# Searches for any new statements and adds them to a compiled spreadsheet
-def update_boa():
-    # If no compiled file exists, build it entirely and save to CSV
-    if not os.path.isfile(compile_name_boa):
-        print(f"No file with name {compile_name_boa}. Creating one now to store compiled Bank of America data.")
-        rebuild_boa()
+# Searches for any new statements for an account and adds them to compiled data
+def update_account(account):
+    fname = f"{account.name} - {account.compile_name}"
+    # If no file exists, build it and save to CSV
+    if not os.path.isfile(fname):
+        print(f"No file with name {fname}. Creating one now to store data for account: {account.name}")
+        rebuild_account(account)
         return
     # If compiled file does not match hash (modified), rebuild
-    if not check_file_hash(compile_name_boa, BankOfAmerica):
-        print(f"Assuming file: {compile_name_boa} has been modified and is not reliable. Rebuilding it from all data.")
-        rebuild_boa()
+    if not check_file_hash(fname, account):
+        print(f"Assuming file: {fname} has been modified and is not reliable. Rebuilding it from all data.")
+        rebuild_account(account)
         return
     # Else, file exists and matches hash, read new data and add.
-    df1 = read_new(BoA_Credit)
-    df2 = read_new(BoA_Debit)
-    df3 = read_new(BoA_Savings)
-    new_data = [df for df in [df1, df2, df3] if df is not None]
-    if len(new_data) > 0:
-        from_csv = pd.read_csv(compile_name_boa)
-        df_total = pd.concat([from_csv] + new_data)
+    df = read_new(account)
+    if df is not None:
+        from_csv = pd.read_csv(fname)
+        df_total = pd.concat([from_csv, df])
 
         print("Dropping any potential duplicates...")
         df_total['Transaction Date'] = pd.to_datetime(df_total['Transaction Date'])
         df_total['Reference Number'] = pd.to_numeric(df_total['Reference Number'])
         df_total['Account Number'] = pd.to_numeric(df_total['Account Number'])
         df_total.drop_duplicates(inplace=True)
-        df_total.to_csv(compile_name_boa, index=False)
-        write_file_hash(compile_name_boa, BankOfAmerica)
-        print(f"Compiled Bank of America file ({compile_name_boa}) has been updated.")
+        df_total.to_csv(fname, index=False)
+        write_file_hash(fname, account)
+        print(f"Compiled account data ({fname}) has been updated.")
     else:
-        print(f"No new data found to add to compiled Bank of America file ({compile_name_boa}).")
+        print(f"No new data found to add to compiled account file ({fname}).")
 
+# Updates accounts in a bank and combines them to the bank data
+def update_bank(bank):
+    dfs = []
+    for acc in bank.accounts:
+        dfs.append(get_account(acc))
+    df_total = pd.concat(dfs)
+    df_total.to_csv(bank.compile_name, index=False)
+    write_file_hash(bank.compile_name, bank)
+    return df_total
+# Updates all accounts for all banks
+def update_all():
+    dfs = []
+    dfs.append(update_bank(BankOfAmerica))
+    dfs.append(update_bank(CapitalOne))
+    df_total = pd.concat(dfs)
+    df_total.to_csv(total_compile_name, index=False)
+    write_file_hash(total_compile_name, Account)
+    return df_total
 
-# Returns a loaded DataFrame of Bank of America data, read from a compiled CSV
-def get_boa():
-    update_boa()
-    df = pd.read_csv(compile_name_boa)
+# Returns a loaded DataFrame of specified account, read from a compiled CSV
+def get_account(account):
+    update_account(account)
+    fname = f"{account.name} - {account.compile_name}"
+    df = get_file(fname)
+    return df
+# Returns dataframe loaded from specified file name
+def get_file(filename):
+    if not os.path.isfile(filename):
+        print(f"No data stored at {filename}.")
+        return None
+    df = pd.read_csv(filename)
+    df = clean_data(df)
+    return df
+# Converts columns of input df to respective types and returns df
+def clean_data(df):
     df['Transaction Date'] = pd.to_datetime(df['Transaction Date'])
     df['Reference Number'] = pd.to_numeric(df['Reference Number'])
     df['Account Number'] = pd.to_numeric(df['Account Number'])
     return df
 
-# Rebuild the compiled file from scratch (using read_all). Returns DF
-def rebuild_boa():
-    df1 = read_all(BoA_Credit)
-    df2 = read_all(BoA_Debit)
-    df3 = read_all(BoA_Savings)
-    df_total = pd.concat([df1, df2, df3])
-    df_total.to_csv(compile_name_boa, index=False)
-    write_file_hash(compile_name_boa, BankOfAmerica)
+# Takes a list of account types and builds a compiled DataFrame to the given filename
+def rebuild_custom(accounts, compile_name):
+    dfs = []
+    for acc in accounts:
+        new_df = read_all(acc)
+        dfs.append(new_df)
+    df_total = pd.concat(dfs)
+    df_total.to_csv(compile_name, index=False)
+    write_file_hash(compile_name, Account)
     return df_total
 
+# Rebuild specified account
+def rebuild_account(account):
+    df = read_all(account)
+    fname = f"{account.name} - {account.compile_name}"
+    df.to_csv(fname, index=False)
+    write_file_hash(fname, account)
+    return df
+
+# Rebuild all accounts for specified bank
+def rebuild_bank(bank):
+    dfs = []
+    for acc in bank.accounts:
+        dfs.append(rebuild_account(acc))
+    df_total = pd.concat(dfs)
+    df_total.to_csv(bank.compile_name, index=False)
+    write_file_hash(bank.compile_name, bank)
+    return df_total
+
+# Rebuild all data for all banks and accounts
+def rebuild_all():
+    dfs = []
+    dfs.append(rebuild_bank(BankOfAmerica))
+    dfs.append(rebuild_bank(CapitalOne))
+    df_total = pd.concat(dfs)
+    df_total.to_csv(total_compile_name, index=False)
+    write_file_hash(total_compile_name, Account)
+    return df_total
 
 while True:
     inp = input("Select an option:\n" +
-                "1: Update BoA file\n" +
-                "2: Print BoA file\n" +
-                "3: Rebuild BoA file\n" +
-                "4: Quit\n")
+                "1: Update Bank of America file\n" +
+                "2: Update Capital One file\n" +
+                "3: Update All Data file\n" +
+                "4: Rebuild Bank of America file\n" +
+                "5: Rebuild Capital One file\n" +
+                "6: Rebuild All Data file\n" +
+                "7: View data file\n" +
+                "8: Quit\n")
     if inp[0] == "1":
-        update_boa()
+        update_bank(BankOfAmerica)
     elif inp[0] == "2":
-        print(get_boa())
+        update_bank(CapitalOne)
     elif inp[0] == "3":
-        rebuild_boa()
-    elif inp[0] =="4":
+        update_all()
+    elif inp[0] == "4":
+        rebuild_bank(BankOfAmerica)
+    elif inp[0] == "5":
+        rebuild_bank(BankOfAmerica)
+    elif inp[0] == "6":
+        rebuild_all()
+    elif inp[0] == "7":
+        files = []
+        files.append(total_compile_name)
+        files.append(BankOfAmerica.compile_name)
+        for acc in BankOfAmerica.accounts:
+            fname = f"{acc.name} - {acc.compile_name}"
+            files.append(fname)
+        files.append(CapitalOne.compile_name)
+        for acc in CapitalOne.accounts:
+            fname = f"{acc.name} - {acc.compile_name}"
+            files.append(fname)
+        options = [(n+1, f) for n,f in enumerate(files)]
+        options.append((len(options)+1, "Go Back"))
+        path = input("Choose one of the listed files:\n" +
+            ''.join([f"{num}: {op}\n" for num, op in options]))
+        try:
+            op = int(path)
+            if op == len(options):
+                continue
+            if op < 1 or op > len(options):
+                print("Enter a number corresponding to an option.")
+                continue
+            f = files[op-1]
+            df = get_file(f)
+            if df is None:
+                continue
+            print(df.info())
+            print(df.head())
+            print(df.tail())
+        except:
+            print("Invalid input")
+            continue
+    elif inp[0] == "8":
         break
