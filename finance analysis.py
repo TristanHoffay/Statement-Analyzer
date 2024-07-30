@@ -21,6 +21,10 @@ class CapitalOne(Account):
     bank = 'Capital One'
     compile_name = 'Capital One.csv'
     accounts = []
+class Discover(Account):
+    bank = 'Discover'
+    compile_name = 'Discover.csv'
+    accounts = []
 class BoA_Credit(BankOfAmerica):
     name = 'Bank of America Credit'
     file_dir = 'boa_credit/'
@@ -141,8 +145,50 @@ class Cap_Credit(CapitalOne):
         'Fee': re.search(r"(Fees Charged).*\$(\d+\.\d{2})", page_text).group(2),
         'Interest': re.search(r"(Interest Charged).*\$(\d+\.\d{2})", page_text).group(2)}
         return true_vals
+class Disc_Credit(Discover):
+    name = 'Discover Credit'
+    file_dir = 'discover_credit/'
+    trans_regex = r"(?:\d{2}/\d{2}\s+(?:[^\$\s]+\s)+\s*-?\$(?:\d+,)*\d+\.\d{2})|(?:INTEREST CHARGE .*\$(?:\d+,)*\d+\.\d{2})|(?:[^(?:INTEREST)]* (?:FEE|CHARGE) .*\$(?:\d+,)*\d+\.\d{2})"
+    date_regex = r"\d{2}/\d{2}/\d{4}\s*-\s*(\d{2}/\d{2}/\d{4})"
+
+    def get_trans_in_page(page_text):
+        transactions = re.findall(Disc_Credit.trans_regex, page_text)
+        return transactions
+    def get_date(reader):
+        date = re.search(Disc_Credit.date_regex, reader.pages[0].extract_text()).group(1)
+        return date
+    def parse_trans(trans, date):
+        data = {}
+        splits = trans.split(' ')
+        # If trans is interest, handle differently
+        if not splits[0][:2].isdigit():
+            data['Transaction Date'] = date
+            data['Posting Date'] = date
+            data['Description'] = trans.split(' $')[0]
+            if splits[0] == 'INTEREST':
+                data['Type'] = 'Interest'
+            else:
+                data['Type'] = 'Fee'
+        else:
+            # Get transaction date
+            year = int(date[-4:])-1 if (splits[0][:2] == "12" and date[:2] == "01") else int(date[-4:])
+            data['Transaction Date'] = f"{splits[0]}/{year}"
+            data['Posting Date'] = f"{splits[0]}/{year}"
+            data['Type'] = "Payment" if ('PAYMENT' in ' '.join(splits[2:-1]) or 'PMT' in ' '.join(splits[2:-1])) else "Credit" if 'CREDIT' in ' '.join(splits[2:-1]) else "Refund" if '-' in splits[-1] else "Purchase"
+            data['Description'] = ' '.join(splits[1:-1]).replace('\n',' ')
+        data['Amount'] = splits[-1].replace('$', '')
+        return data
+    def parse_validity_ref(page_text):
+        true_vals = {
+        'Payment+Credit+Refund': '-' + re.search(r"(Payments and Credits).*\$((\d+,)*\d+\.\d{2})", page_text).group(2),
+        'Purchase': re.search(r"(Purchases).*\$((\d+,)*\d+\.\d{2})", page_text).group(2),
+        'Fee': re.search(r"(Fees Charged).*\$((\d+,)*\d+\.\d{2})", page_text).group(2),
+        'Interest': re.search(r"(Interest Charged).*\$((\d+,)*\d+\.\d{2})", page_text).group(2)}
+        return true_vals
+
 BankOfAmerica.accounts = [BoA_Credit, BoA_Debit, BoA_Savings]
 CapitalOne.accounts = [Cap_Credit]
+Discover.accounts = [Disc_Credit]
 
 # Jason is your friend. He will help you manage data storage with a JSON file.
 # Give him life to earn his favor (instantiate and objectify him)
@@ -262,9 +308,10 @@ def read_all(account):
             errors.append(f)
             continue
         df = pd.concat([df, new_df])
-    print(f"Files in the {account.name} directory have been read into a dataframe.")
+    good_files = [f for f in files if f not in errors]
+    print(f"{len(good_files)} files in the {account.name} directory have been read into a dataframe.")
     if len(errors) > 0:
-        print(f"There was a problem with files: {', '.join(errors)}")
+        print(f"There was a problem with {len(errors)} files: {', '.join(errors)}")
     return df
 
 # Similar functionality to read_all() except that it ignores files which have already been read (denoted by filename). Returns DF of new data. 'check_hash' parameter determines if stored hash of statement files should also be used to identify new data. This is not really necessary though, and in a situation where it would make a difference, it would produce unpredictable output (duplicates, etc.)
@@ -290,9 +337,10 @@ def read_new(account, check_hash=False):
             errors.append(f)
             continue
         df = pd.concat([df, new_df])
-    print(f"New files in the {account.name} directory have been read into a dataframe.")
+    good_files = [f for f in new_files if f not in errors]
+    print(f"{len(good_files)} new files in the {account.name} directory have been read into a dataframe.")
     if len(errors) > 0:
-        print(f"There was a problem with files: {', '.join(errors)}")
+        print(f"There was a problem with {len(errors)} files: {', '.join(errors)}")
     return df
 
 # Function for reading statement of given account type. Returns DataFrame.
@@ -340,7 +388,12 @@ def read(filename, account):
     true_values = account.parse_validity_ref(text)
     # Compare actual values to totals of each category
     for cat in true_values.keys():
-        found_value = round(df[df['Type']==cat]['Amount'].sum(), 2)
+        # For handling categories that are combined under one true value
+        groups = cat.split('+')
+        found_value = 0
+        for group in groups:
+            found_value += round(df[df['Type']==group]['Amount'].sum(), 2)
+            print(f"Total after adding {group}: {found_value}")
         valid = int(found_value*100) == int(float(true_values[cat])*100)
         if not valid:
             print(f"Validation failed for {filename}.\nStatement total for {cat} ({true_values[cat]}) does not match the total for extracted transaction amounts ({found_value}).")
@@ -428,6 +481,7 @@ def update_all():
     dfs = []
     dfs.append(update_bank(BankOfAmerica))
     dfs.append(update_bank(CapitalOne))
+    dfs.append(update_bank(Discover))
     df_total = pd.concat(dfs)
     df_total.to_csv(total_compile_name, index=False)
     write_file_hash(total_compile_name, Account)
@@ -488,6 +542,7 @@ def rebuild_all():
     dfs = []
     dfs.append(rebuild_bank(BankOfAmerica))
     dfs.append(rebuild_bank(CapitalOne))
+    dfs.append(rebuild_bank(Discover))
     df_total = pd.concat(dfs)
     df_total.to_csv(total_compile_name, index=False)
     write_file_hash(total_compile_name, Account)
@@ -497,25 +552,31 @@ while True:
     inp = input("Select an option:\n" +
                 "1: Update Bank of America file\n" +
                 "2: Update Capital One file\n" +
-                "3: Update All Data file\n" +
-                "4: Rebuild Bank of America file\n" +
-                "5: Rebuild Capital One file\n" +
-                "6: Rebuild All Data file\n" +
-                "7: View data file\n" +
-                "8: Quit\n")
-    if inp[0] == "1":
+                "3: Update Discover file\n" +
+                "4: Update All Data file\n" +
+                "5: Rebuild Bank of America file\n" +
+                "6: Rebuild Capital One file\n" +
+                "7: Rebuild Discover file\n" +
+                "8: Rebuild All Data file\n" +
+                "9: View data file\n" +
+                "10: Quit\n")
+    if inp == "1":
         update_bank(BankOfAmerica)
-    elif inp[0] == "2":
+    elif inp == "2":
         update_bank(CapitalOne)
-    elif inp[0] == "3":
+    elif inp == "3":
+        update_bank(Discover)
+    elif inp == "4":
         update_all()
-    elif inp[0] == "4":
+    elif inp == "5":
         rebuild_bank(BankOfAmerica)
-    elif inp[0] == "5":
-        rebuild_bank(BankOfAmerica)
-    elif inp[0] == "6":
+    elif inp == "6":
+        rebuild_bank(CapitalOne)
+    elif inp == "7":
+        rebuild_bank(Discover)
+    elif inp == "8":
         rebuild_all()
-    elif inp[0] == "7":
+    elif inp == "9":
         files = []
         files.append(total_compile_name)
         files.append(BankOfAmerica.compile_name)
@@ -524,6 +585,10 @@ while True:
             files.append(fname)
         files.append(CapitalOne.compile_name)
         for acc in CapitalOne.accounts:
+            fname = f"{acc.name} - {acc.compile_name}"
+            files.append(fname)
+        files.append(Discover.compile_name)
+        for acc in Discover.accounts:
             fname = f"{acc.name} - {acc.compile_name}"
             files.append(fname)
         options = [(n+1, f) for n,f in enumerate(files)]
@@ -547,5 +612,5 @@ while True:
         except:
             print("Invalid input")
             continue
-    elif inp[0] == "8":
+    elif inp == "10":
         break
